@@ -1,0 +1,6 @@
+model_id,beams,avg_new_tokens,avg_distinct_trigrams,stop_early_rate
+gpt2-large,1,90.0,68.625,0.0
+gpt2-large,2,89.625,69.375,0.125
+gpt2-large,4,84.5,58.625,0.0
+gpt2-large,8,89.625,59.75,0.125
+gpt2-large,16,90.0,60.375,0.0

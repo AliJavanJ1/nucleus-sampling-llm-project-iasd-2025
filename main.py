@@ -1,7 +1,7 @@
 from generator import LLMEngine, ModelConfig, DecodeConfig
 
 model_config = ModelConfig(
-    model_id="Qwen/Qwen3-1.7B-Base",
+    model_id="Qwen/Qwen3-0.6B-Base",
     use_fast_tokenizer=True,
     device_map="auto",
 )

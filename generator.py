@@ -6,7 +6,7 @@ from tqdm import trange
 
 @dataclass
 class ModelConfig:
-    # model_ids = {"gpt2-large", "Qwen/Qwen3-1.7B-Base"}
+    # model_ids = {"gpt2-large", "Qwen/Qwen2.5-0.5B"}
     model_id: str
     
     use_fast_tokenizer: bool = True
@@ -144,7 +144,7 @@ class LLMEngine:
         
         with torch.inference_mode():
             if dcfg.method in {"beam_search", "greedy"}:
-                if dcfg.method == "beam_search" and dcfg.num_beams < 2:
+                if dcfg.method == "beam_search" and dcfg.num_beams < 1:
                     raise ValueError("num_beams must be >= 2 for beam search")
                 out_ids = self.model.generate(
                     input_ids=input_ids,
@@ -152,7 +152,6 @@ class LLMEngine:
                     do_sample=False,                 # beam/greedy family
                     num_beams=dcfg.num_beams if dcfg.method == "beam_search" else 1,
                     max_new_tokens=dcfg.max_new_tokens,
-                    early_stopping=True,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=eos_id,
                     use_cache=True,

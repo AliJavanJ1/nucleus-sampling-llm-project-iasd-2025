@@ -1,0 +1,6 @@
+model_id,beams,avg_new_tokens,avg_distinct_trigrams,stop_early_rate
+Qwen/Qwen3-0.6B-Base,1,100.0,66.5,0.0
+Qwen/Qwen3-0.6B-Base,2,100.0,69.75,0.0
+Qwen/Qwen3-0.6B-Base,4,100.0,61.875,0.0
+Qwen/Qwen3-0.6B-Base,8,100.0,60.25,0.0
+Qwen/Qwen3-0.6B-Base,16,100.0,69.375,0.0
