@@ -1,10 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional
 import torch
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 @dataclass
 class ModelConfig:
@@ -21,8 +18,8 @@ class DecodeConfig:
         method: str = "top_p",
         max_new_tokens: int = 50,
         temperature: float = 1.0,
-        top_k: int = 0,
-        top_p: float = 1.0,
+        k: int = 0,
+        p: float = 1.0,
         num_beams: int = 1,
         seed: Optional[int] = None,
     ):
@@ -33,56 +30,59 @@ class DecodeConfig:
     
         # parameters for sampling methods
         self.temperature: float = temperature
-        self.top_k: int = top_k
-        self.top_p: float = top_p
+        self.k: int = k
+        self.p: float = p
         self.num_beams: int = num_beams
         
         # reproducibility
         self.seed: Optional[int] = seed
     
-    def sample_next_token(self, logits):
+    def sample_next_token(self, logits): 
+        # logits: [B, V]
         if self.temperature is not None and self.temperature != 1.0:
             if self.temperature <= 0:
                 raise ValueError("temperature must be > 0 for sampling")
             logits = logits / self.temperature
         if self.method == "top_k":
-            logits = self.__top_k_filter(logits, self.top_k)
+            logits = self.__top_k_filter(logits)
         elif self.method == "top_p":
-            logits = self.__top_p_filter(logits, self.top_p)
+            logits = self.__top_p_filter(logits)
         
-        probs = torch.softmax(logits, dim=-1)
-        return torch.multinomial(probs, num_samples=1)
+        probs = torch.softmax(logits, dim=-1)                     # [B, V]
+        next_ids = torch.multinomial(probs, num_samples=1)        # [B, 1]
+        return next_ids
     
-    def __top_k_filter(self, logits, k: int):
-        if k is None or k <= 0:
+    def __top_k_filter(self, logits):
+        # logits: [B, V]
+        if self.k is None or self.k <= 0:
             return logits
-        values, _ = torch.topk(logits, k)
-        cutoff = values[-1]
+        values, _ = torch.topk(logits, self.k, dim=-1)   # [B, k]
+        cutoff = values[..., -1].unsqueeze(-1)      # [B, 1]
         filtered = logits.clone()
         filtered[filtered < cutoff] = -float("inf")
         return filtered
     
-    def __top_p_filter(self, logits, p: float):
-        if p is None or p >= 1.0:
+    def __top_p_filter(self, logits):
+        # logits: [B, V]
+        if self.p is None or self.p >= 1.0:
             return logits
-        if not (0.0 < p < 1.0):
+        if not (0.0 < self.p < 1.0):
             raise ValueError("top_p must be in (0,1)")
 
-        probs = torch.softmax(logits, dim=-1)
-        sorted_probs, sorted_idx = torch.sort(probs, descending=True)
-        cum = torch.cumsum(sorted_probs, dim=-1)
+        probs = torch.softmax(logits, dim=-1)                                   # [B, V]
+        sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)   # [B, V]
+        cum = torch.cumsum(sorted_probs, dim=-1)                                # [B, V]   
 
-        # keep minimal prefix with cum > p
-        keep = cum < p
-        # ensure at least 1 token is kept
-        keep[0] = True
-        # include the first token that crosses p
-        if keep.sum() < keep.numel():
-            keep[keep.sum()] = True
+        # Remove tokens where cumulative mass exceeds p, but keep the first token that crosses p
+        sorted_to_remove = cum > self.p                            # [B, V]
+        sorted_to_remove[..., 1:] = sorted_to_remove[..., :-1].clone()
+        sorted_to_remove[..., 0] = False
 
-        keep_idx = sorted_idx[keep]
-        filtered = torch.full_like(logits, -float("inf"))
-        filtered[keep_idx] = logits[keep_idx]
+        # Scatter mask back to original vocab order
+        to_remove = torch.zeros_like(sorted_to_remove).scatter(1, sorted_idx, sorted_to_remove)
+
+        filtered = logits.clone()
+        filtered[to_remove] = -float("inf")
         return filtered
     
 class LLMEngine:
@@ -101,7 +101,7 @@ class LLMEngine:
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
         
-        # Helpful for decoder-only models when batching
+        # for batching
         tokenizer.padding_side = "left"
         return tokenizer
                 
@@ -120,22 +120,24 @@ class LLMEngine:
         model.eval()
         return model
 
-    def generate(self, prompt_text: str, dcfg: DecodeConfig) -> str:    
+    def generate(self, text_list: list[str], dcfg: DecodeConfig) -> list[str]:    
         if dcfg.seed is not None:
             torch.manual_seed(dcfg.seed)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(dcfg.seed)
         
-        enc = self.tokenizer(prompt_text, return_tensors="pt")
-        device = self.model.device
+        enc = self.tokenizer(text_list, return_tensors="pt", padding=True)
+        device = next(self.model.parameters()).device
         input_ids = enc["input_ids"].to(device)
-        attention_mask = enc.get("attention_mask", None)
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(device)
+        attention_mask = enc.get("attention_mask")
+        attention_mask = attention_mask.to(device)
         
+        eos_id = self.tokenizer.eos_token_id
         
         with torch.inference_mode():
             if dcfg.method == "beam_search":
+                if dcfg.num_beams < 1:
+                    raise ValueError("num_beams must be >= 1")
                 out_ids = self.model.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -144,24 +146,48 @@ class LLMEngine:
                     max_new_tokens=dcfg.max_new_tokens,
                     early_stopping=True,
                     pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=eos_id,
+                    use_cache=True
                 )
             else:
-                for _ in range(dcfg.max_new_tokens):
-                    out = self.model(input_ids=input_ids)
-                    logits = out.logits[0, -1, :]  # last token logits: [|V|]
-                    next_id = dcfg.sample_next_token(logits)  # [1]
-                    input_ids = torch.cat([input_ids, next_id.view(1, 1)], dim=1)
-                    attention_mask = None if attention_mask is None else torch.cat(
-                        [attention_mask, torch.ones((1,1), dtype=attention_mask.dtype, device=device)],
-                        dim=1
-                    )       
-
-                    if next_id.item() == self.tokenizer.eos_token_id:
-                        break
-                out_ids = input_ids
-            
-        return self.tokenizer.decode(out_ids[0], skip_special_tokens=True)
+                out_ids = input_ids                                 # [B, T]
+                finished = torch.zeros(out_ids.size(0), dtype=torch.bool, device=device)
                 
+                out = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=True,
+                )
+                
+                past = out.past_key_values                           # KV cache
+                logits = out.logits[:, -1, :]                         # [B, V]
+                
+                for _ in range(dcfg.max_new_tokens):
+                    next_ids = dcfg.sample_next_token(logits)         # [B, 1]
+                    if eos_id is not None:
+                        next_ids = torch.where(
+                            finished.unsqueeze(1),
+                            torch.full_like(next_ids, eos_id),
+                            next_ids
+                        )
+                    out_ids = torch.cat([out_ids, next_ids], dim=1)
 
-
+                    attention_mask = torch.cat(
+                        [attention_mask, attention_mask.new_ones((attention_mask.size(0), 1))],
+                        dim=1
+                    )
+                    
+                    finished = finished | (next_ids.squeeze(1) == eos_id)
+                    if torch.all(finished):
+                        break
+                    
+                    out = self.model(
+                        input_ids=next_ids,               # [B, 1]
+                        attention_mask=attention_mask,
+                        past_key_values=past,
+                        use_cache=True,
+                    )
+                    past = out.past_key_values
+                    logits = out.logits[:, -1, :]         # [B, V]
+            
+        return self.tokenizer.batch_decode(out_ids, skip_special_tokens=True)
