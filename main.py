@@ -15,12 +15,12 @@ model_config = ModelConfig(
 llm_engine = LLMEngine(model_config)
 
 decode_config = DecodeConfig(
-    method="top_p",
+    method="beam_search",
     max_new_tokens=100,
-    p=0.5,
+    t=.5,
     k=5,
-    num_beams=5,
-    temperature=.5,
+    p=0.5,
+    num_beams=200,
     seed=44,
 )
 

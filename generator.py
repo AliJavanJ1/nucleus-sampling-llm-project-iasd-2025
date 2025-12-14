@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from tqdm import trange
 
 @dataclass
 class ModelConfig:
@@ -17,19 +18,19 @@ class DecodeConfig:
         self,
         method: str = "top_p",
         max_new_tokens: int = 50,
-        temperature: float = 1.0,
+        t: float = 1.0,
         k: int = 0,
         p: float = 1.0,
         num_beams: int = 1,
         seed: Optional[int] = None,
     ):
-        # methods = {"temperature", "beam_search", "top_k", "top_p"}
+        # methods = {"temperature", "beam_search", "top_k", "top_p", "greedy", "pure_sampling"}
         self.method: str = method
     
         self.max_new_tokens: int = max_new_tokens
     
         # parameters for sampling methods
-        self.temperature: float = temperature
+        self.t: float = t
         self.k: int = k
         self.p: float = p
         self.num_beams: int = num_beams
@@ -39,10 +40,14 @@ class DecodeConfig:
     
     def sample_next_token(self, logits): 
         # logits: [B, V]
-        if self.temperature is not None and self.temperature != 1.0:
-            if self.temperature <= 0:
-                raise ValueError("temperature must be > 0 for sampling")
-            logits = logits / self.temperature
+        if self.method == "pure_sampling":
+            t = 1.0
+        else:
+            t = self.t
+        if t is not None and t != 1.0:
+            if t <= 0:
+                raise ValueError("temperature (t) must be > 0 for sampling")
+            logits = logits / t
         if self.method == "top_k":
             logits = self.__top_k_filter(logits)
         elif self.method == "top_p":
@@ -85,6 +90,7 @@ class DecodeConfig:
         filtered[to_remove] = -float("inf")
         return filtered
     
+
 class LLMEngine:
     def __init__(self, model_config: ModelConfig):
         self.model_config = model_config
@@ -120,7 +126,9 @@ class LLMEngine:
         model.eval()
         return model
 
-    def generate(self, text_list: list[str], dcfg: DecodeConfig) -> list[str]:    
+    def generate(self, text_list: list[str], dcfg: DecodeConfig) -> list[str]:
+        if dcfg.method not in {"temperature", "top_k", "top_p", "beam_search", "greedy", "pure_sampling"}:
+            raise ValueError(f"Unknown method: {dcfg.method}")
         if dcfg.seed is not None:
             torch.manual_seed(dcfg.seed)
             if torch.cuda.is_available():
@@ -135,19 +143,19 @@ class LLMEngine:
         eos_id = self.tokenizer.eos_token_id
         
         with torch.inference_mode():
-            if dcfg.method == "beam_search":
-                if dcfg.num_beams < 1:
-                    raise ValueError("num_beams must be >= 1")
+            if dcfg.method in {"beam_search", "greedy"}:
+                if dcfg.method == "beam_search" and dcfg.num_beams < 2:
+                    raise ValueError("num_beams must be >= 2 for beam search")
                 out_ids = self.model.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     do_sample=False,                 # beam/greedy family
-                    num_beams=dcfg.num_beams,             # beam width
+                    num_beams=dcfg.num_beams if dcfg.method == "beam_search" else 1,
                     max_new_tokens=dcfg.max_new_tokens,
                     early_stopping=True,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=eos_id,
-                    use_cache=True
+                    use_cache=True,
                 )
             else:
                 out_ids = input_ids                                 # [B, T]
@@ -162,7 +170,7 @@ class LLMEngine:
                 past = out.past_key_values                           # KV cache
                 logits = out.logits[:, -1, :]                         # [B, V]
                 
-                for _ in range(dcfg.max_new_tokens):
+                for _ in trange(dcfg.max_new_tokens, desc="Generating", unit="tok"):
                     next_ids = dcfg.sample_next_token(logits)         # [B, 1]
                     if eos_id is not None:
                         next_ids = torch.where(
