@@ -1,6 +1,6 @@
 # nucleus-sampling-llm-project-iasd-2025
 
-This project explores text generation with large language models and compares several decoding strategies, including nucleus (top-p) sampling, top-k sampling, temperature sampling, greedy decoding, and beam search.
+This project is a smaller replication of the experiment described in the paper [*The Curious Case of Neural Text Degeneration*](https://arxiv.org/abs/1904.09751). Its goal is to revalidate some of the paper's findings by comparing different decoding strategies for large language model text generation, with a particular focus on nucleus (top-p) sampling.
 
 The repository contains a small generation engine built on top of Hugging Face Transformers, plus notebooks and result files used to experiment with different models and decoding settings. The code is designed to make it easy to switch between models, tune decoding parameters, and evaluate the effect of each strategy on generated text.
 
@@ -74,7 +74,7 @@ print(llm_engine.generate(
 
 - For sampling methods, the generator applies temperature scaling and then filters logits using top-k or top-p when selected.
 - Beam search and greedy decoding use the built-in `model.generate()` API.
-- The project is a good starting point for comparing how decoding choices affect fluency, diversity, and repetition in generated text.
+- The project is intended as a compact reproduction of the paper's decoding comparison setup, not a full-scale benchmark.
 
 ## Project structure
 
